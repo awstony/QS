@@ -1,0 +1,78 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Main CF template that builds shared resources and other stacks
+Parameters:
+  InstanceID:
+    Type: String
+    Description: Id of the instance to be stopped
+    AllowedPattern: (?=^.{3,63}$)(?!^(\d+\.)+\d+$)(^(([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])\.)*([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])$)
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaQSStopRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Path: /
+      Policies:
+        - PolicyName: "LambdaQS_StopPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ec2:StopInstances"
+                Resource: "*"
+  LambdaQSStopInstance:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: QS_Stop_Instance
+      Description: LambdaFunction
+      Runtime: nodejs12.x
+      Code:
+        ZipFile: |
+          'use strict'
+          const aws = require('aws-sdk');
+          const ec2 = new aws.EC2
+
+          const stopQSInstance = (id) => {
+              let params = {
+                  InstanceIds:[id]
+              }
+
+          const stopRequest = ec2.stopInstances(params).promise();
+
+          stopRequest.then((data)=> {
+              return data
+          }).catch((err)=> {
+              console.log(err)
+          })
+          return stopRequest
+          }
+
+          exports.handler = async (event) => {
+              let ec2Id = process.env.INSTANCEID
+              let stopStatus = await stopQSInstance(ec2Id)
+              console.log(stopStatus)
+              return 'QS Ec2 Stopped'
+          };
+
+      Handler: 'index.handler'
+      MemorySize: 128
+      Timeout: 3
+      Role:
+        Fn::GetAtt:
+          - LambdaRole
+          - Arn
+      Environment:
+        Variables:
+          INSTANCEID: !Ref InstanceID
