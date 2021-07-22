@@ -202,7 +202,7 @@ Resources:
       Environment:
         Variables:
           EMAIL: !Ref AdminAddress
-          APIG: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${LambdaQSStopInstance}"
+          APIG: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
   HttpApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
@@ -216,7 +216,7 @@ Resources:
       Action: "lambda:InvokeFunction"
       FunctionName: QS_Stop_Instance
       Principal: "apigateway.amazonaws.com"
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/${LambdaQSStopInstance}"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*"
   QSAlarmSNSTopic:
     Type: AWS::SNS::Topic
     Properties:
