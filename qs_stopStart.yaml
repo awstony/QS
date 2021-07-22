@@ -1,13 +1,16 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Main CF template that builds qs stopStart
+Description: CF Template for QS Stop Start
 Parameters:
   InstanceID:
     Type: String
     Description: Id of the instance to be stopped
     AllowedPattern: (?=^.{3,63}$)(?!^(\d+\.)+\d+$)(^(([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])\.)*([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])$)
+  AdminAddress:
+    Type: String
+    Description: The email address of the Quarantine Studios Admin or Owner
 Resources:
-  LambdaRole:
+  LambdaQSStopRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: LambdaQSStopRole
@@ -44,35 +47,206 @@ Resources:
           const aws = require('aws-sdk');
           const ec2 = new aws.EC2
 
+
+          // stop the running instance
           const stopQSInstance = (id) => {
+
               let params = {
                   InstanceIds:[id]
               }
 
-          const stopRequest = ec2.stopInstances(params).promise();
+              const stopRequest = ec2.stopInstances(params).promise();
 
-          stopRequest.then((data)=> {
-              return data
-          }).catch((err)=> {
-              console.log(err)
-          })
-          return stopRequest
+              stopRequest.then((data)=> {
+                  return data
+              }).catch((err)=> {
+                  console.log(err)
+              })
+
+              return stopRequest
           }
 
           exports.handler = async (event) => {
-              let ec2Id = process.env.INSTANCEID
-              let stopStatus = await stopQSInstance(ec2Id)
-              console.log(stopStatus)
-              return 'QS Ec2 Stopped'
-          };
 
+          let ec2Id = process.env.INSTANCEID
+
+          let stopStatus = await stopQSInstance(ec2Id)
+          console.log(stopStatus)
+
+          const responseBlock = {
+              statusCode: 200,
+              headers: {
+                  "Access-Control-Allow-Headers" : "Content-Type",
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Methods": "OPTIONS,POST,GET,PUT"
+              },
+              body: 'Your Quarantine Studios EC2 Instance was stopped. To turn the instance back on, go to the EC2 console, start the instance, and create a new DCV session within the instance.'
+          }
+
+            return responseBlock
+            };
       Handler: 'index.handler'
       MemorySize: 128
       Timeout: 3
       Role:
         Fn::GetAtt:
-          - LambdaRole
+          - LambdaQSStopRole
           - Arn
       Environment:
         Variables:
           INSTANCEID: !Ref InstanceID
+  LambdaQSNotifyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaQSNotifyRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Path: /
+      Policies:
+        - PolicyName: "LambdaQS_NotifyPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ses:SendEmail"
+                Resource: "*"
+  LambdaQSNotify:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: QS_Notify
+      Description: LambdaFunction
+      Runtime: nodejs12.x
+      Code:
+        ZipFile: |
+          'use strict'
+          const aws = require('aws-sdk');
+          const ses = new aws.SES;
+
+
+          const messenger = (email, api) => {
+
+              // The HTML body of the email.
+              const body_html = `<html>
+                                  <head></head>
+                                  <body>
+                                    <p>The utilization on the EC2 you're using to run Quarantine Studios is low. This can mean that your not using the server. If you're not using the server, you can turn it off to save money. If you wish to stop the server click the link below.</p>
+                                    <p>You can restart the server at any time by going to the EC2 console, starting your instance, and within it creating a new DCV session.</p>
+                                    <p>
+                                      <a href=${api}>Stop your Quarantine Studios Server</a>
+                                      </p>
+                                  </body>
+                                  </html>`
+
+
+              const sparams = {
+                  Destination: {
+                      ToAddresses: [email]
+                  },
+                  Message: {
+                      Body: {
+                          Html: {
+                              Charset: "UTF-8",
+                              Data: body_html
+                          },
+                          Text: {
+                              Charset: "UTF-8",
+                              Data: "This is a notification that your DCV server EC2 host is idle. If you know that you aren't using the server, you should turn it off to save money."
+                          }
+                      },
+                      Subject: {
+                          Charset: "UTF-8",
+                          Data: "Your Quarantine Studios Server Utilization is low"
+                      }
+                  },
+                  Source: email
+              };
+
+
+                //Publish message
+                const sesPromise = ses.sendEmail(sparams).promise();
+
+                sesPromise.then((data)=> {
+                  return data
+                }).catch((err)=>{
+                  console.log(err)
+                });
+
+              return sesPromise
+          }
+
+          exports.handler = async (event) => {
+
+              let email = process.env.EMAIL
+              let link = process.env.APIG
+
+              let message = await messenger(email, link);
+              return message
+          };
+      Handler: 'index.handler'
+      MemorySize: 128
+      Timeout: 3
+      Role:
+        Fn::GetAtt:
+          - LambdaQSNotifyRole
+          - Arn
+      Environment:
+        Variables:
+          EMAIL: !Ref AdminAddress
+          APIG: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${LambdaQSStopInstance}"
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: QS-Stop-API
+      Description: Invokes Lambda to stop QS Instance
+      ProtocolType: HTTP
+      Target: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:QS_Stop_Instance/invocations"
+  StopFunctionInvokePermissions:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: QS_Stop_Instance
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/${LambdaQSStopInstance}"
+  QSAlarmSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint:
+            Fn::GetAtt:
+              - LambdaQSNotify
+              - Arn
+          Protocol: lambda
+      TopicName: "QSAlarmSNSTopic"
+  LambdaCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Notification alert that CPU is idle
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '5'
+      AlarmActions:
+        - !Ref QSAlarmSNSTopic
+      Dimensions:
+      - Name: "InstanceId"
+        Value: !Ref InstanceID
+      ComparisonOperator: LessThanThreshold
+  NotifyFunctionInvokePermissions:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: QS_Notify
+      Principal: "sns.amazonaws.com"
+      SourceArn: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:QSAlarmSNSTopic"
